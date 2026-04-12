@@ -9,8 +9,8 @@ Upgrades in this version:
   3. Packet detail popup    — double-click any row for full layer breakdown
   4. Column sorting         — click any header to sort
   5. Live stats side panel  — pie chart + bar chart, updates every second
-  6. GeoIP column           — flag + country, city next to each IP
-     GeoIP tooltip          — hover any row for full country/city/ISP/ASN/coords
+  6. GeoIP column + tooltip — flag/country/city column, hover for full details
+  7. Export dropdown        — single button → PCAP / CSV / JSON
 """
 
 import tkinter as tk
@@ -27,6 +27,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from packet_sniffer import PacketSniffer
 from packet_analyzer import PacketAnalyzer
 from geo_lookup import GeoLookup
+from exporter import export_pcap, export_csv, export_json
 from config import (
     DEFAULT_WINDOW_SIZE, DEFAULT_WINDOW_MIN_SIZE, PACKET_QUEUE_UPDATE_INTERVAL,
     PACKET_DISPLAY_COLUMNS, PROTOCOL_FILTERS, SUPPORTED_FILE_TYPES
@@ -55,14 +56,19 @@ CHART_COLORS = {
 CHART_REFRESH_MS = 1000
 
 # ── TREEVIEW COLUMNS (adds GEO after DST) ────────────────────────────────────
-# We extend PACKET_DISPLAY_COLUMNS at runtime so config.py stays unchanged.
-DISPLAY_COLUMNS = dict(PACKET_DISPLAY_COLUMNS)   # copy from config
-# Insert "geo" column after "dst"
+DISPLAY_COLUMNS = dict(PACKET_DISPLAY_COLUMNS)
 _ordered = list(DISPLAY_COLUMNS.items())
 _dst_idx = [i for i, (k, _) in enumerate(_ordered) if k == "dst"]
 _insert_at = _dst_idx[0] + 1 if _dst_idx else len(_ordered)
 _ordered.insert(_insert_at, ("geo", {"width": 200, "anchor": "w"}))
 DISPLAY_COLUMNS = dict(_ordered)
+
+# File type filters per format
+_FILETYPES = {
+    "pcap": [("PCAP files", "*.pcap"), ("All files", "*.*")],
+    "csv":  [("CSV files",  "*.csv"),  ("All files", "*.*")],
+    "json": [("JSON files", "*.json"), ("All files", "*.*")],
+}
 
 
 class SnifferGUI:
@@ -75,12 +81,10 @@ class SnifferGUI:
         self._all_packets = []
         self._proto_counts = defaultdict(int)
 
-        # GeoIP engine (gracefully handles missing DB / missing library)
         self._geo = GeoLookup()
         if not self._geo.available:
             logger.warning("GeoIP unavailable — column will show '🌐 Unknown'")
 
-        # Tooltip state
         self._tooltip_win = None
         self._tooltip_after_id = None
 
@@ -112,6 +116,8 @@ class SnifferGUI:
         self._create_main_frame()
         self._create_status_frame()
 
+    # ── CONTROL FRAME ────────────────────────────────────────────────────────
+
     def _create_control_frame(self):
         ctrl_frame = ttk.LabelFrame(self.root, text="Capture Controls", padding=10)
         ctrl_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
@@ -139,18 +145,43 @@ class SnifferGUI:
 
         btn_frame = ttk.Frame(ctrl_frame)
         btn_frame.grid(row=0, column=4, sticky="e")
+
         self.start_btn = ttk.Button(btn_frame, text="Start Capture",
                                     command=self._start_capture)
         self.start_btn.pack(side="left", padx=2)
+
         self.stop_btn = ttk.Button(btn_frame, text="Stop Capture",
                                    command=self._stop_capture, state="disabled")
         self.stop_btn.pack(side="left", padx=2)
+
         self.clear_btn = ttk.Button(btn_frame, text="Clear",
                                     command=self._clear_packets)
         self.clear_btn.pack(side="left", padx=2)
-        self.save_btn = ttk.Button(btn_frame, text="Save PCAP",
-                                   command=self._save_packets)
-        self.save_btn.pack(side="left", padx=2)
+
+        # ── 7. EXPORT DROPDOWN ───────────────────────────────────────────────
+        # A ttk.Menubutton shows "Export ▾" and reveals PCAP / CSV / JSON
+        self._export_menu_btn = ttk.Menubutton(
+            btn_frame, text="Export ▾", direction="below")
+        self._export_menu_btn.pack(side="left", padx=2)
+
+        export_menu = tk.Menu(self._export_menu_btn, tearoff=False)
+        export_menu.add_command(
+            label="💾  Save as PCAP",
+            command=lambda: self._export("pcap"))
+        export_menu.add_command(
+            label="📊  Save as CSV",
+            command=lambda: self._export("csv"))
+        export_menu.add_command(
+            label="📋  Save as JSON",
+            command=lambda: self._export("json"))
+        export_menu.add_separator()
+        export_menu.add_command(
+            label="📦  Export All Formats",
+            command=self._export_all)
+
+        self._export_menu_btn["menu"] = export_menu
+
+    # ── SEARCH BAR ───────────────────────────────────────────────────────────
 
     def _create_search_bar(self):
         search_frame = ttk.Frame(self.root)
@@ -165,6 +196,8 @@ class SnifferGUI:
         ttk.Button(search_frame, text="✕", width=3,
                    command=lambda: self.search_var.set("")).grid(
             row=0, column=2, padx=(4, 0))
+
+    # ── MAIN FRAME ───────────────────────────────────────────────────────────
 
     def _create_main_frame(self):
         main_frame = ttk.Frame(self.root)
@@ -312,16 +345,15 @@ class SnifferGUI:
         status_frame = ttk.Frame(self.root)
         status_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         status_frame.columnconfigure(1, weight=1)
+
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(status_frame, textvariable=self.status_var).grid(
             row=0, column=0, sticky="w")
 
-        # GeoIP status indicator
         geo_status = ("🌍 GeoIP active" if self._geo.available
                       else "⚠️  GeoIP unavailable — add GeoLite2-City.mmdb")
         self._geo_status_var = tk.StringVar(value=geo_status)
-        ttk.Label(status_frame, textvariable=self._geo_status_var,
-                  foreground="#80cfa0" if self._geo.available else "#ffaa55").grid(
+        ttk.Label(status_frame, textvariable=self._geo_status_var).grid(
             row=0, column=1, sticky="w", padx=20)
 
         self.count_var = tk.StringVar(value="Packets: 0")
@@ -332,36 +364,27 @@ class SnifferGUI:
 
     def _setup_bindings(self):
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.packet_tree.bind("<Double-1>",    self._on_packet_double_click)
-        self.packet_tree.bind("<Motion>",      self._on_mouse_motion)
-        self.packet_tree.bind("<Leave>",       self._hide_tooltip)
+        self.packet_tree.bind("<Double-1>", self._on_packet_double_click)
+        self.packet_tree.bind("<Motion>",   self._on_mouse_motion)
+        self.packet_tree.bind("<Leave>",    self._hide_tooltip)
 
-    # ── 6. GEOIP TOOLTIP ─────────────────────────────────────────────────────
+    # ── TOOLTIP ──────────────────────────────────────────────────────────────
 
     def _on_mouse_motion(self, event):
-        """Show tooltip after a short delay when hovering over a row."""
         item = self.packet_tree.identify_row(event.y)
         if not item:
             self._hide_tooltip()
             return
-
-        # Cancel any pending tooltip
         if self._tooltip_after_id:
             self.root.after_cancel(self._tooltip_after_id)
-
-        # Schedule tooltip to appear after 400 ms (avoids flicker while scrolling)
         self._tooltip_after_id = self.root.after(
             400, lambda: self._show_tooltip(event, item))
 
     def _show_tooltip(self, event, item):
-        """Build and display the GeoIP tooltip for the hovered row."""
         self._hide_tooltip()
-
         values = self.packet_tree.item(item, "values")
         if not values:
             return
-
-        # values order: time, src, dst, geo, proto, len, info
         col_keys = list(DISPLAY_COLUMNS.keys())
         try:
             src = values[col_keys.index("src")]
@@ -369,41 +392,21 @@ class SnifferGUI:
         except (ValueError, IndexError):
             return
 
-        # Build tooltip content
         src_lines = self._geo.tooltip_lines(src)
         dst_lines = self._geo.tooltip_lines(dst)
+        lines = (["─"*38, "  SOURCE", "─"*38] + src_lines +
+                 ["", "─"*38, "  DESTINATION", "─"*38] + dst_lines)
 
-        lines = (
-            ["─" * 38, "  SOURCE", "─" * 38]
-            + src_lines
-            + ["", "─" * 38, "  DESTINATION", "─" * 38]
-            + dst_lines
-        )
-        text = "\n".join(lines)
-
-        # Create tooltip window
         tip = tk.Toplevel(self.root)
-        tip.wm_overrideredirect(True)   # no title bar
+        tip.wm_overrideredirect(True)
         tip.wm_attributes("-topmost", True)
-
-        lbl = tk.Label(
-            tip, text=text, justify="left",
-            font=("Courier", 9),
-            bg="#1a1a2e", fg="#e0e0e0",
-            relief="solid", borderwidth=1,
-            padx=10, pady=8
-        )
-        lbl.pack()
-
-        # Position near cursor but keep on screen
-        x = event.x_root + 16
-        y = event.y_root + 10
-        tip.wm_geometry(f"+{x}+{y}")
-
+        tk.Label(tip, text="\n".join(lines), justify="left",
+                 font=("Courier", 9), bg="#1a1a2e", fg="#e0e0e0",
+                 relief="solid", borderwidth=1, padx=10, pady=8).pack()
+        tip.wm_geometry(f"+{event.x_root+16}+{event.y_root+10}")
         self._tooltip_win = tip
 
     def _hide_tooltip(self, event=None):
-        """Destroy the tooltip window if it exists."""
         if self._tooltip_after_id:
             self.root.after_cancel(self._tooltip_after_id)
             self._tooltip_after_id = None
@@ -434,7 +437,7 @@ class SnifferGUI:
             pkt.get("timestamp", ""), pkt.get("src", ""),
             pkt.get("dst", ""),       pkt.get("protocol", ""),
             str(pkt.get("length", "")), pkt.get("info", ""),
-            pkt.get("geo_summary", ""),   # also searchable
+            pkt.get("geo_summary", ""),
         ]).lower()
         return query in haystack
 
@@ -479,20 +482,63 @@ class SnifferGUI:
         self.count_var.set("Packets: 0")
         self._draw_charts()
 
-    def _save_packets(self):
-        if not self.sniffer.captured_packets:
-            messagebox.showinfo("No Packets", "No packets to save.")
+    # ── 7. EXPORT ────────────────────────────────────────────────────────────
+
+    def _export(self, fmt: str):
+        """Show save dialog and export in the chosen format."""
+        if not self._all_packets:
+            messagebox.showinfo("No Packets", "No packets to export.")
             return
+
         filename = filedialog.asksaveasfilename(
-            defaultextension=".pcap",
-            filetypes=SUPPORTED_FILE_TYPES,
-            title="Save Captured Packets")
-        if filename:
-            success, message, _ = self.sniffer.save_packets(filename)
-            if success:
-                messagebox.showinfo("Success", message)
-            else:
-                messagebox.showerror("Error", message)
+            defaultextension=f".{fmt}",
+            filetypes=_FILETYPES[fmt],
+            title=f"Export as {fmt.upper()}",
+            initialfile=f"capture.{fmt}",
+        )
+        if not filename:
+            return
+
+        if fmt == "pcap":
+            ok, msg, count = export_pcap(self._all_packets, filename)
+        elif fmt == "csv":
+            ok, msg, count = export_csv(self._all_packets, self._geo, filename)
+        elif fmt == "json":
+            ok, msg, count = export_json(self._all_packets, self._geo, filename)
+        else:
+            return
+
+        if ok:
+            messagebox.showinfo("Export Successful", msg)
+            self.status_var.set(f"Exported {count} packets → {fmt.upper()}")
+        else:
+            messagebox.showerror("Export Failed", msg)
+
+    def _export_all(self):
+        """Export to all three formats at once — user picks a folder."""
+        if not self._all_packets:
+            messagebox.showinfo("No Packets", "No packets to export.")
+            return
+
+        folder = filedialog.askdirectory(title="Choose folder for exported files")
+        if not folder:
+            return
+
+        import os
+        base = os.path.join(folder, "capture")
+        results = []
+
+        ok, msg, _ = export_pcap(self._all_packets, f"{base}.pcap")
+        results.append(f"PCAP: {'✓' if ok else '✗'} {msg}")
+
+        ok, msg, _ = export_csv(self._all_packets, self._geo, f"{base}.csv")
+        results.append(f"CSV:  {'✓' if ok else '✗'} {msg}")
+
+        ok, msg, _ = export_json(self._all_packets, self._geo, f"{base}.json")
+        results.append(f"JSON: {'✓' if ok else '✗'} {msg}")
+
+        messagebox.showinfo("Export All Complete", "\n".join(results))
+        self.status_var.set("Exported all formats to folder")
 
     # ── GUI UPDATE LOOP ──────────────────────────────────────────────────────
 
@@ -503,7 +549,6 @@ class SnifferGUI:
             query = self.search_var.get().lower().strip()
             for pkt in packets:
                 if PacketAnalyzer.matches_filter(pkt, current_filter):
-                    # Attach geo summary so search and display can use it
                     pkt["geo_summary"] = self._geo.summary(pkt.get("src", ""))
                     self._all_packets.append(pkt)
                     self._proto_counts[pkt.get("protocol", "OTHER")] += 1
@@ -519,10 +564,7 @@ class SnifferGUI:
         self.root.after(PACKET_QUEUE_UPDATE_INTERVAL, self._update_gui)
 
     def _insert_packet_row(self, pkt):
-        """Insert one packet row — columns: time, src, dst, geo, proto, len, info."""
         geo = pkt.get("geo_summary") or self._geo.summary(pkt.get("src", ""))
-
-        # Build values in DISPLAY_COLUMNS order
         col_keys = list(DISPLAY_COLUMNS.keys())
         value_map = {
             "time":  pkt["timestamp"],
@@ -534,11 +576,9 @@ class SnifferGUI:
             "info":  pkt["info"],
         }
         values = tuple(value_map.get(k, "") for k in col_keys)
-
         tag = self._protocol_tag(pkt["protocol"])
         self.packet_tree.insert("", "end", values=values, tags=(tag,))
         self.packet_count += 1
-
         if not self.search_var.get():
             children = self.packet_tree.get_children()
             if children:
@@ -571,7 +611,6 @@ class SnifferGUI:
         values = self.packet_tree.item(selection[0], "values")
         if not values:
             return
-
         col_keys = list(DISPLAY_COLUMNS.keys())
         val_map = dict(zip(col_keys, values))
         timestamp = val_map.get("time", "")
@@ -588,7 +627,6 @@ class SnifferGUI:
                     and p["dst"] == dst and p["protocol"] == protocol):
                 matched_pkt = p
                 break
-
         self._show_detail_window(
             (timestamp, src, dst, protocol, length, info, geo), matched_pkt)
 
@@ -600,7 +638,6 @@ class SnifferGUI:
         win.geometry("750x580")
         win.resizable(True, True)
 
-        # Summary
         summary_frame = ttk.LabelFrame(win, text="Summary", padding=8)
         summary_frame.pack(fill="x", padx=10, pady=(10, 4))
         for row_i, (lbl, val) in enumerate([
@@ -614,26 +651,20 @@ class SnifferGUI:
             ttk.Label(summary_frame, text=val).grid(
                 row=row_i, column=1, sticky="w", pady=1)
 
-        # GeoIP detail section
         geo_frame = ttk.LabelFrame(win, text="GeoIP Details", padding=8)
         geo_frame.pack(fill="x", padx=10, pady=4)
-
         geo_text = tk.Text(geo_frame, height=6, wrap="none",
                            font=("Courier", 9), relief="flat",
                            bg="#1a1a2e", fg="#e0e0e0", state="disabled")
         geo_text.pack(fill="x")
-
-        src_lines  = self._geo.tooltip_lines(src)
-        dst_lines  = self._geo.tooltip_lines(dst)
-        geo_content = (
-            "SOURCE\n" + "\n".join(src_lines) +
-            "\n\nDESTINATION\n" + "\n".join(dst_lines)
-        )
+        src_lines = self._geo.tooltip_lines(src)
+        dst_lines = self._geo.tooltip_lines(dst)
+        geo_content = ("SOURCE\n" + "\n".join(src_lines) +
+                       "\n\nDESTINATION\n" + "\n".join(dst_lines))
         geo_text.config(state="normal")
         geo_text.insert("end", geo_content)
         geo_text.config(state="disabled")
 
-        # Layer breakdown
         layers_frame = ttk.LabelFrame(win, text="Layer Breakdown", padding=8)
         layers_frame.pack(fill="both", expand=True, padx=10, pady=4)
         text_widget = tk.Text(layers_frame, wrap="word", font=("Courier", 10),
@@ -677,7 +708,6 @@ class SnifferGUI:
         text_widget.config(state="normal")
         text_widget.insert("end", "\n".join(detail_lines))
         text_widget.config(state="disabled")
-
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=6)
 
     # ── CLOSE ────────────────────────────────────────────────────────────────
