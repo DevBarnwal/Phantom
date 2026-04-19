@@ -11,11 +11,14 @@ Upgrades in this version:
   5. Live stats side panel  — pie chart + bar chart, updates every second
   6. GeoIP column + tooltip — flag/country/city column, hover for full details
   7. Export dropdown        — single button → PCAP / CSV / JSON
+  8. Security alerts tab    — port scan + ARP spoof detection, sound + flash
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
+import platform
+import subprocess
 from collections import defaultdict
 
 import matplotlib
@@ -28,6 +31,7 @@ from packet_sniffer import PacketSniffer
 from packet_analyzer import PacketAnalyzer
 from geo_lookup import GeoLookup
 from exporter import export_pcap, export_csv, export_json
+from threat_detector import ThreatDetector, Alert
 from config import (
     DEFAULT_WINDOW_SIZE, DEFAULT_WINDOW_MIN_SIZE, PACKET_QUEUE_UPDATE_INTERVAL,
     PACKET_DISPLAY_COLUMNS, PROTOCOL_FILTERS, SUPPORTED_FILE_TYPES
@@ -55,7 +59,13 @@ CHART_COLORS = {
 
 CHART_REFRESH_MS = 1000
 
-# ── TREEVIEW COLUMNS (adds GEO after DST) ────────────────────────────────────
+# Alert severity → (bg, fg) for treeview rows
+ALERT_COLORS = {
+    "HIGH":   ("#5c1a1a", "#ff6b6b"),
+    "MEDIUM": ("#3d2800", "#ffaa55"),
+}
+
+# ── TREEVIEW COLUMNS ─────────────────────────────────────────────────────────
 DISPLAY_COLUMNS = dict(PACKET_DISPLAY_COLUMNS)
 _ordered = list(DISPLAY_COLUMNS.items())
 _dst_idx = [i for i, (k, _) in enumerate(_ordered) if k == "dst"]
@@ -63,7 +73,6 @@ _insert_at = _dst_idx[0] + 1 if _dst_idx else len(_ordered)
 _ordered.insert(_insert_at, ("geo", {"width": 200, "anchor": "w"}))
 DISPLAY_COLUMNS = dict(_ordered)
 
-# File type filters per format
 _FILETYPES = {
     "pcap": [("PCAP files", "*.pcap"), ("All files", "*.*")],
     "csv":  [("CSV files",  "*.csv"),  ("All files", "*.*")],
@@ -76,17 +85,18 @@ class SnifferGUI:
 
     def __init__(self, root):
         self.root = root
-        self.sniffer = PacketSniffer()
+        self.sniffer      = PacketSniffer()
         self.packet_count = 0
         self._all_packets = []
         self._proto_counts = defaultdict(int)
 
-        self._geo = GeoLookup()
-        if not self._geo.available:
-            logger.warning("GeoIP unavailable — column will show '🌐 Unknown'")
+        self._geo      = GeoLookup()
+        self._detector = ThreatDetector()
+        self._alerts   = []           # list of Alert objects
 
-        self._tooltip_win = None
+        self._tooltip_win      = None
         self._tooltip_after_id = None
+        self._alert_flash_id   = None   # for tab flash animation
 
         self._setup_window()
         self._create_widgets()
@@ -102,8 +112,8 @@ class SnifferGUI:
 
     def _setup_window(self):
         self.root.title("Advanced Packet Sniffer & Analyzer")
-        self.root.geometry("1500x720")
-        self.root.minsize(1100, 580)
+        self.root.geometry("1500x760")
+        self.root.minsize(1100, 600)
         self.root.resizable(True, True)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(2, weight=1)
@@ -111,10 +121,10 @@ class SnifferGUI:
     # ── WIDGETS ──────────────────────────────────────────────────────────────
 
     def _create_widgets(self):
-        self._create_control_frame()
-        self._create_search_bar()
-        self._create_main_frame()
-        self._create_status_frame()
+        self._create_control_frame()   # row 0
+        self._create_search_bar()      # row 1
+        self._create_main_frame()      # row 2  (notebook + chart)
+        self._create_status_frame()    # row 3
 
     # ── CONTROL FRAME ────────────────────────────────────────────────────────
 
@@ -149,36 +159,27 @@ class SnifferGUI:
         self.start_btn = ttk.Button(btn_frame, text="Start Capture",
                                     command=self._start_capture)
         self.start_btn.pack(side="left", padx=2)
-
         self.stop_btn = ttk.Button(btn_frame, text="Stop Capture",
                                    command=self._stop_capture, state="disabled")
         self.stop_btn.pack(side="left", padx=2)
-
         self.clear_btn = ttk.Button(btn_frame, text="Clear",
                                     command=self._clear_packets)
         self.clear_btn.pack(side="left", padx=2)
 
-        # ── 7. EXPORT DROPDOWN ───────────────────────────────────────────────
-        # A ttk.Menubutton shows "Export ▾" and reveals PCAP / CSV / JSON
+        # Export dropdown
         self._export_menu_btn = ttk.Menubutton(
             btn_frame, text="Export ▾", direction="below")
         self._export_menu_btn.pack(side="left", padx=2)
-
         export_menu = tk.Menu(self._export_menu_btn, tearoff=False)
-        export_menu.add_command(
-            label="💾  Save as PCAP",
-            command=lambda: self._export("pcap"))
-        export_menu.add_command(
-            label="📊  Save as CSV",
-            command=lambda: self._export("csv"))
-        export_menu.add_command(
-            label="📋  Save as JSON",
-            command=lambda: self._export("json"))
+        export_menu.add_command(label="💾  Save as PCAP",
+                                command=lambda: self._export("pcap"))
+        export_menu.add_command(label="📊  Save as CSV",
+                                command=lambda: self._export("csv"))
+        export_menu.add_command(label="📋  Save as JSON",
+                                command=lambda: self._export("json"))
         export_menu.add_separator()
-        export_menu.add_command(
-            label="📦  Export All Formats",
-            command=self._export_all)
-
+        export_menu.add_command(label="📦  Export All Formats",
+                                command=self._export_all)
         self._export_menu_btn["menu"] = export_menu
 
     # ── SEARCH BAR ───────────────────────────────────────────────────────────
@@ -197,7 +198,7 @@ class SnifferGUI:
                    command=lambda: self.search_var.set("")).grid(
             row=0, column=2, padx=(4, 0))
 
-    # ── MAIN FRAME ───────────────────────────────────────────────────────────
+    # ── MAIN FRAME — notebook (left) + chart (right) ─────────────────────────
 
     def _create_main_frame(self):
         main_frame = ttk.Frame(self.root)
@@ -205,10 +206,29 @@ class SnifferGUI:
         main_frame.columnconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=0)
         main_frame.rowconfigure(0, weight=1)
-        self._create_packet_tree(main_frame)
+
+        # ── Notebook with two tabs ────────────────────────────────────────
+        self._notebook = ttk.Notebook(main_frame)
+        self._notebook.grid(row=0, column=0, sticky="nsew")
+
+        # Tab 1 — Packets
+        packets_tab = ttk.Frame(self._notebook)
+        self._notebook.add(packets_tab, text="  📡 Packets  ")
+        packets_tab.columnconfigure(0, weight=1)
+        packets_tab.rowconfigure(0, weight=1)
+        self._create_packet_tree(packets_tab)
+
+        # Tab 2 — Alerts
+        alerts_tab = ttk.Frame(self._notebook)
+        self._notebook.add(alerts_tab, text="  🛡️ Alerts  ")
+        alerts_tab.columnconfigure(0, weight=1)
+        alerts_tab.rowconfigure(0, weight=1)
+        self._create_alerts_panel(alerts_tab)
+
+        # Chart panel on the right
         self._create_chart_panel(main_frame)
 
-    # ── TREEVIEW ─────────────────────────────────────────────────────────────
+    # ── PACKET TREEVIEW ──────────────────────────────────────────────────────
 
     def _create_packet_tree(self, parent):
         tree_frame = ttk.Frame(parent)
@@ -237,6 +257,75 @@ class SnifferGUI:
         self.packet_tree.grid(row=0, column=0, sticky="nsew")
         v_scroll.grid(row=0, column=1, sticky="ns")
         h_scroll.grid(row=1, column=0, sticky="ew")
+
+    # ── 8. ALERTS PANEL ──────────────────────────────────────────────────────
+
+    def _create_alerts_panel(self, parent):
+        """Alerts tab — treeview of detected threats + clear button."""
+        top = ttk.Frame(parent)
+        top.grid(row=0, column=0, sticky="nsew")
+        top.columnconfigure(0, weight=1)
+        top.rowconfigure(1, weight=1)
+
+        # Toolbar
+        toolbar = ttk.Frame(top)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(4, 4))
+
+        self._alert_count_var = tk.StringVar(value="No alerts")
+        ttk.Label(toolbar, textvariable=self._alert_count_var,
+                  font=("", 10, "bold")).pack(side="left", padx=8)
+
+        ttk.Button(toolbar, text="Clear Alerts",
+                   command=self._clear_alerts).pack(side="right", padx=8)
+        ttk.Button(toolbar, text="Export Alerts CSV",
+                   command=self._export_alerts_csv).pack(side="right", padx=4)
+
+        # Alerts treeview
+        alert_frame = ttk.Frame(top)
+        alert_frame.grid(row=1, column=0, sticky="nsew")
+        alert_frame.columnconfigure(0, weight=1)
+        alert_frame.rowconfigure(0, weight=1)
+
+        alert_cols = {
+            "time":     {"width": 155, "anchor": "w"},
+            "severity": {"width": 80,  "anchor": "center"},
+            "type":     {"width": 110, "anchor": "center"},
+            "src":      {"width": 160, "anchor": "w"},
+            "detail":   {"width": 600, "anchor": "w"},
+        }
+        self.alert_tree = ttk.Treeview(
+            alert_frame,
+            columns=list(alert_cols.keys()),
+            show="headings", selectmode="browse")
+
+        for col, cfg in alert_cols.items():
+            self.alert_tree.heading(col, text=col.upper())
+            self.alert_tree.column(col, width=cfg["width"], anchor=cfg["anchor"])
+
+        # Severity color tags
+        for sev, (bg, fg) in ALERT_COLORS.items():
+            self.alert_tree.tag_configure(sev, background=bg, foreground=fg)
+
+        av = ttk.Scrollbar(alert_frame, orient="vertical",
+                           command=self.alert_tree.yview)
+        ah = ttk.Scrollbar(alert_frame, orient="horizontal",
+                           command=self.alert_tree.xview)
+        self.alert_tree.configure(yscrollcommand=av.set, xscrollcommand=ah.set)
+        self.alert_tree.grid(row=0, column=0, sticky="nsew")
+        av.grid(row=0, column=1, sticky="ns")
+        ah.grid(row=1, column=0, sticky="ew")
+
+        # Detail pane below treeview
+        detail_frame = ttk.LabelFrame(top, text="Alert Detail", padding=6)
+        detail_frame.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+
+        self._alert_detail_var = tk.StringVar(
+            value="Click an alert row to see full details.")
+        ttk.Label(detail_frame, textvariable=self._alert_detail_var,
+                  wraplength=900, justify="left",
+                  font=("Courier", 9)).pack(fill="x")
+
+        self.alert_tree.bind("<<TreeviewSelect>>", self._on_alert_select)
 
     # ── CHART PANEL ──────────────────────────────────────────────────────────
 
@@ -344,21 +433,20 @@ class SnifferGUI:
     def _create_status_frame(self):
         status_frame = ttk.Frame(self.root)
         status_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
-        status_frame.columnconfigure(1, weight=1)
+        status_frame.columnconfigure(2, weight=1)
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(status_frame, textvariable=self.status_var).grid(
             row=0, column=0, sticky="w")
 
         geo_status = ("🌍 GeoIP active" if self._geo.available
-                      else "⚠️  GeoIP unavailable — add GeoLite2-City.mmdb")
-        self._geo_status_var = tk.StringVar(value=geo_status)
-        ttk.Label(status_frame, textvariable=self._geo_status_var).grid(
+                      else "⚠️  GeoIP unavailable")
+        ttk.Label(status_frame, text=geo_status).grid(
             row=0, column=1, sticky="w", padx=20)
 
         self.count_var = tk.StringVar(value="Packets: 0")
         ttk.Label(status_frame, textvariable=self.count_var).grid(
-            row=0, column=2, sticky="e")
+            row=0, column=3, sticky="e")
 
     # ── BINDINGS ─────────────────────────────────────────────────────────────
 
@@ -373,8 +461,7 @@ class SnifferGUI:
     def _on_mouse_motion(self, event):
         item = self.packet_tree.identify_row(event.y)
         if not item:
-            self._hide_tooltip()
-            return
+            self._hide_tooltip(); return
         if self._tooltip_after_id:
             self.root.after_cancel(self._tooltip_after_id)
         self._tooltip_after_id = self.root.after(
@@ -383,20 +470,17 @@ class SnifferGUI:
     def _show_tooltip(self, event, item):
         self._hide_tooltip()
         values = self.packet_tree.item(item, "values")
-        if not values:
-            return
+        if not values: return
         col_keys = list(DISPLAY_COLUMNS.keys())
         try:
             src = values[col_keys.index("src")]
             dst = values[col_keys.index("dst")]
         except (ValueError, IndexError):
             return
-
         src_lines = self._geo.tooltip_lines(src)
         dst_lines = self._geo.tooltip_lines(dst)
         lines = (["─"*38, "  SOURCE", "─"*38] + src_lines +
                  ["", "─"*38, "  DESTINATION", "─"*38] + dst_lines)
-
         tip = tk.Toplevel(self.root)
         tip.wm_overrideredirect(True)
         tip.wm_attributes("-topmost", True)
@@ -411,10 +495,8 @@ class SnifferGUI:
             self.root.after_cancel(self._tooltip_after_id)
             self._tooltip_after_id = None
         if self._tooltip_win:
-            try:
-                self._tooltip_win.destroy()
-            except Exception:
-                pass
+            try: self._tooltip_win.destroy()
+            except Exception: pass
             self._tooltip_win = None
 
     # ── SEARCH ───────────────────────────────────────────────────────────────
@@ -431,8 +513,7 @@ class SnifferGUI:
                 self._insert_packet_row(pkt)
 
     def _packet_matches_search(self, pkt, query):
-        if not query:
-            return True
+        if not query: return True
         haystack = " ".join([
             pkt.get("timestamp", ""), pkt.get("src", ""),
             pkt.get("dst", ""),       pkt.get("protocol", ""),
@@ -478,27 +559,21 @@ class SnifferGUI:
             self.packet_tree.delete(item)
         self._all_packets.clear()
         self._proto_counts.clear()
+        self._detector.reset()
         self.packet_count = 0
         self.count_var.set("Packets: 0")
         self._draw_charts()
 
-    # ── 7. EXPORT ────────────────────────────────────────────────────────────
+    # ── EXPORT ───────────────────────────────────────────────────────────────
 
     def _export(self, fmt: str):
-        """Show save dialog and export in the chosen format."""
         if not self._all_packets:
             messagebox.showinfo("No Packets", "No packets to export.")
             return
-
         filename = filedialog.asksaveasfilename(
-            defaultextension=f".{fmt}",
-            filetypes=_FILETYPES[fmt],
-            title=f"Export as {fmt.upper()}",
-            initialfile=f"capture.{fmt}",
-        )
-        if not filename:
-            return
-
+            defaultextension=f".{fmt}", filetypes=_FILETYPES[fmt],
+            title=f"Export as {fmt.upper()}", initialfile=f"capture.{fmt}")
+        if not filename: return
         if fmt == "pcap":
             ok, msg, count = export_pcap(self._all_packets, filename)
         elif fmt == "csv":
@@ -507,7 +582,6 @@ class SnifferGUI:
             ok, msg, count = export_json(self._all_packets, self._geo, filename)
         else:
             return
-
         if ok:
             messagebox.showinfo("Export Successful", msg)
             self.status_var.set(f"Exported {count} packets → {fmt.upper()}")
@@ -515,30 +589,132 @@ class SnifferGUI:
             messagebox.showerror("Export Failed", msg)
 
     def _export_all(self):
-        """Export to all three formats at once — user picks a folder."""
         if not self._all_packets:
             messagebox.showinfo("No Packets", "No packets to export.")
             return
-
         folder = filedialog.askdirectory(title="Choose folder for exported files")
-        if not folder:
-            return
-
+        if not folder: return
         import os
         base = os.path.join(folder, "capture")
         results = []
-
-        ok, msg, _ = export_pcap(self._all_packets, f"{base}.pcap")
-        results.append(f"PCAP: {'✓' if ok else '✗'} {msg}")
-
-        ok, msg, _ = export_csv(self._all_packets, self._geo, f"{base}.csv")
-        results.append(f"CSV:  {'✓' if ok else '✗'} {msg}")
-
-        ok, msg, _ = export_json(self._all_packets, self._geo, f"{base}.json")
-        results.append(f"JSON: {'✓' if ok else '✗'} {msg}")
-
+        for fmt, fn in [("pcap", export_pcap), ("csv", None), ("json", None)]:
+            if fmt == "pcap":
+                ok, msg, _ = export_pcap(self._all_packets, f"{base}.pcap")
+            elif fmt == "csv":
+                ok, msg, _ = export_csv(self._all_packets, self._geo, f"{base}.csv")
+            else:
+                ok, msg, _ = export_json(self._all_packets, self._geo, f"{base}.json")
+            results.append(f"{fmt.upper()}: {'✓' if ok else '✗'} {msg}")
         messagebox.showinfo("Export All Complete", "\n".join(results))
-        self.status_var.set("Exported all formats to folder")
+
+    # ── 8. ALERT HANDLING ────────────────────────────────────────────────────
+
+    def _add_alert(self, alert: Alert):
+        """Add one alert to the alerts tab and trigger sound + flash."""
+        self._alerts.append(alert)
+
+        self.alert_tree.insert(
+            "", "end",
+            values=(alert.timestamp, alert.severity,
+                    alert.type, alert.src, alert.detail),
+            tags=(alert.severity,)
+        )
+
+        # Update counter label
+        count = len(self._alerts)
+        self._alert_count_var.set(
+            f"⚠️  {count} alert{'s' if count != 1 else ''} detected")
+
+        # Visual — flash the Alerts tab title
+        self._flash_alert_tab()
+
+        # Sound — cross-platform bell
+        self._play_alert_sound()
+
+    def _flash_alert_tab(self, flashes_left=6):
+        """Alternately change the Alerts tab text to draw attention."""
+        if flashes_left <= 0:
+            count = len(self._alerts)
+            self._notebook.tab(1, text=f"  🚨 Alerts ({count})  ")
+            return
+        current = self._notebook.tab(1, "text")
+        if "🚨" in current:
+            self._notebook.tab(1, text="  ⚠️  ALERT!  ")
+        else:
+            self._notebook.tab(1, text="  🚨 ALERT!  ")
+        self._alert_flash_id = self.root.after(
+            300, lambda: self._flash_alert_tab(flashes_left - 1))
+
+    def _play_alert_sound(self):
+        """Play a system beep / sound cross-platform."""
+        try:
+            sys_platform = platform.system()
+            if sys_platform == "Darwin":
+                # macOS — use afplay with a system sound
+                subprocess.Popen(
+                    ["afplay", "/System/Library/Sounds/Funk.aiff"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif sys_platform == "Windows":
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            else:
+                # Linux — try paplay, else fallback to terminal bell
+                try:
+                    subprocess.Popen(
+                        ["paplay", "/usr/share/sounds/freedesktop/stereo/bell.oga"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except FileNotFoundError:
+                    print("\a", end="", flush=True)
+        except Exception as e:
+            logger.debug(f"Alert sound failed: {e}")
+            print("\a", end="", flush=True)   # fallback terminal bell
+
+    def _on_alert_select(self, event):
+        """Show full detail of selected alert in the detail pane."""
+        selection = self.alert_tree.selection()
+        if not selection: return
+        values = self.alert_tree.item(selection[0], "values")
+        if not values: return
+        timestamp, severity, alert_type, src, detail = values
+        self._alert_detail_var.set(
+            f"[{timestamp}]  {severity}  {alert_type}\n"
+            f"Source: {src}\n"
+            f"Detail: {detail}"
+        )
+
+    def _clear_alerts(self):
+        if messagebox.askyesno("Clear Alerts", "Clear all security alerts?"):
+            for item in self.alert_tree.get_children():
+                self.alert_tree.delete(item)
+            self._alerts.clear()
+            self._detector.reset()
+            self._alert_count_var.set("No alerts")
+            self._alert_detail_var.set("Click an alert row to see full details.")
+            self._notebook.tab(1, text="  🛡️ Alerts  ")
+
+    def _export_alerts_csv(self):
+        """Export alerts list to CSV."""
+        if not self._alerts:
+            messagebox.showinfo("No Alerts", "No alerts to export.")
+            return
+        import csv
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")],
+            initialfile="alerts.csv",
+            title="Export Alerts as CSV")
+        if not filename: return
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=["type", "severity", "src", "detail", "timestamp"])
+                writer.writeheader()
+                for a in self._alerts:
+                    writer.writerow(a.to_dict())
+            messagebox.showinfo("Exported",
+                                f"Saved {len(self._alerts)} alerts to {filename}")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     # ── GUI UPDATE LOOP ──────────────────────────────────────────────────────
 
@@ -552,8 +728,13 @@ class SnifferGUI:
                     pkt["geo_summary"] = self._geo.summary(pkt.get("src", ""))
                     self._all_packets.append(pkt)
                     self._proto_counts[pkt.get("protocol", "OTHER")] += 1
+
                     if self._packet_matches_search(pkt, query):
                         self._insert_packet_row(pkt)
+
+                    # Run threat detection on every packet
+                    for alert in self._detector.analyze(pkt):
+                        self._add_alert(alert)
 
             stats = self.sniffer.get_statistics()
             self.count_var.set(
@@ -567,12 +748,9 @@ class SnifferGUI:
         geo = pkt.get("geo_summary") or self._geo.summary(pkt.get("src", ""))
         col_keys = list(DISPLAY_COLUMNS.keys())
         value_map = {
-            "time":  pkt["timestamp"],
-            "src":   pkt["src"],
-            "dst":   pkt["dst"],
-            "geo":   geo,
-            "proto": pkt["protocol"],
-            "len":   pkt["length"],
+            "time":  pkt["timestamp"], "src": pkt["src"],
+            "dst":   pkt["dst"],       "geo": geo,
+            "proto": pkt["protocol"],  "len": pkt["length"],
             "info":  pkt["info"],
         }
         values = tuple(value_map.get(k, "") for k in col_keys)
@@ -606,37 +784,28 @@ class SnifferGUI:
     def _on_packet_double_click(self, event):
         self._hide_tooltip()
         selection = self.packet_tree.selection()
-        if not selection:
-            return
+        if not selection: return
         values = self.packet_tree.item(selection[0], "values")
-        if not values:
-            return
+        if not values: return
         col_keys = list(DISPLAY_COLUMNS.keys())
-        val_map = dict(zip(col_keys, values))
-        timestamp = val_map.get("time", "")
-        src       = val_map.get("src", "")
-        dst       = val_map.get("dst", "")
-        protocol  = val_map.get("proto", "")
-        length    = val_map.get("len", "")
-        info      = val_map.get("info", "")
+        val_map  = dict(zip(col_keys, values))
+        timestamp = val_map.get("time", "");  src      = val_map.get("src", "")
+        dst       = val_map.get("dst", "");   protocol = val_map.get("proto", "")
+        length    = val_map.get("len", "");   info     = val_map.get("info", "")
         geo       = val_map.get("geo", "")
-
         matched_pkt = None
         for p in self._all_packets:
             if (p["timestamp"] == timestamp and p["src"] == src
                     and p["dst"] == dst and p["protocol"] == protocol):
-                matched_pkt = p
-                break
+                matched_pkt = p; break
         self._show_detail_window(
             (timestamp, src, dst, protocol, length, info, geo), matched_pkt)
 
     def _show_detail_window(self, values, pkt_info):
         timestamp, src, dst, protocol, length, info, geo = values
-
         win = tk.Toplevel(self.root)
         win.title(f"Packet Detail — {protocol}  {src} → {dst}")
-        win.geometry("750x580")
-        win.resizable(True, True)
+        win.geometry("750x580"); win.resizable(True, True)
 
         summary_frame = ttk.LabelFrame(win, text="Summary", padding=8)
         summary_frame.pack(fill="x", padx=10, pady=(10, 4))
@@ -659,10 +828,9 @@ class SnifferGUI:
         geo_text.pack(fill="x")
         src_lines = self._geo.tooltip_lines(src)
         dst_lines = self._geo.tooltip_lines(dst)
-        geo_content = ("SOURCE\n" + "\n".join(src_lines) +
-                       "\n\nDESTINATION\n" + "\n".join(dst_lines))
         geo_text.config(state="normal")
-        geo_text.insert("end", geo_content)
+        geo_text.insert("end", "SOURCE\n" + "\n".join(src_lines) +
+                        "\n\nDESTINATION\n" + "\n".join(dst_lines))
         geo_text.config(state="disabled")
 
         layers_frame = ttk.LabelFrame(win, text="Layer Breakdown", padding=8)
@@ -714,6 +882,8 @@ class SnifferGUI:
 
     def _on_close(self):
         self._hide_tooltip()
+        if self._alert_flash_id:
+            self.root.after_cancel(self._alert_flash_id)
         if self.sniffer.is_running:
             if messagebox.askyesno("Quit", "Stop capture and quit?"):
                 self.sniffer.stop_capture()
