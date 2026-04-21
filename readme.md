@@ -1,6 +1,6 @@
-<<<<<<< HEAD
+
 [![Download](https://img.shields.io/github/v/release/DevBarnwal/Phantom?label=Download&style=for-the-badge)](https://github.com/DevBarnwal/Phantom/releases/latest)
-=======
+
 
 # Advanced Packet Sniffer & Analyzer
 
