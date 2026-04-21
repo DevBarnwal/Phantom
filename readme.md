@@ -1,3 +1,5 @@
+[![Download](https://img.shields.io/github/v/release/DevBarnwal/Phantom?label=Download&style=for-the-badge)](https://github.com/DevBarnwal/Phantom/releases/latest)
+
 # Advanced Packet Sniffer & Analyzer
 
 A professional packet capture and analysis tool built with Python, Scapy, and Tkinter. This application provides a user-friendly GUI for network packet monitoring, analysis, and export capabilities.
