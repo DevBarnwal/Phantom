@@ -1,251 +1,247 @@
+<div align="center">
 
-[![Download](https://img.shields.io/github/v/release/DevBarnwal/Phantom?label=Download&style=for-the-badge)](https://github.com/DevBarnwal/Phantom/releases/latest)
+# 👻 Phantom
 
+**Network Intelligence & Threat Monitor**
 
-# Advanced Packet Sniffer & Analyzer
+[![Download](https://img.shields.io/github/v/release/DevBarnwal/phantom?label=Download&style=for-the-badge&color=6e40c9)](https://github.com/DevBarnwal/phantom/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=for-the-badge)](https://github.com/DevBarnwal/phantom/releases)
+[![License](https://img.shields.io/badge/License-Educational-red?style=for-the-badge)](LICENSE)
 
-A professional packet capture and analysis tool built with Python, Scapy, and Tkinter. This application provides a user-friendly GUI for network packet monitoring, analysis, and export capabilities.
+*Silently watching your network — real-time packet capture, GeoIP intelligence, and threat detection.*
+
+---
+
+[Features](#features) · [Installation](#installation) · [Usage](#usage) · [Security](#security-detection) · [Export](#export--reports) · [Download](#download)
+
+</div>
+
+---
+
+## Overview
+
+Phantom is a professional network analysis tool built with Python and Scapy. It captures live network traffic, identifies protocols, geolocates IP addresses, detects security threats, and generates full HTML dashboard reports — all from a clean dark-themed desktop GUI.
+
+---
 
 ## Features
 
-### Core Functionality
-- **Real-time packet capture** from network interfaces
-- **Protocol identification** (TCP, UDP, ICMP, HTTP, HTTPS, DNS, ARP)
-- **Flexible filtering** options for different protocols
-- **Packet export** to PCAP format for analysis in other tools
-- **Multi-threaded architecture** for responsive GUI
+### 📡 Live Packet Capture
+- Real-time capture from any network interface
+- Protocol detection — TCP, UDP, ICMP, HTTP, HTTPS, DNS, ARP
+- BPF filter support for focused capture sessions
+- Multi-threaded — GUI stays responsive under heavy traffic
 
-### Advanced Features
-- **Detailed packet analysis** with protocol-specific information
-- **Memory management** to prevent excessive resource usage
-- **Comprehensive logging** system
-- **Cross-platform compatibility** (Windows, Linux, macOS)
-- **Privilege checking** for proper network access
+### 🎨 Visual Interface
+- Color-coded rows per protocol
+- Live pie + bar charts updating every second
+- Search bar — filter by IP, protocol, keyword, or country in real time
+- Column sorting — click any header
+- Double-click any packet for full layer-by-layer breakdown with hex dump
 
-### User Interface
-- **Modern GUI** with organized layout
-- **Real-time packet display** with auto-scrolling
-- **Resizable columns** and responsive design
-- **Status indicators** and packet counters
-- **Intuitive controls** for capture management
+### 🌍 GeoIP Intelligence
+- Flag + country + city column next to every IP
+- Hover tooltip showing country, city, region, ISP/org, ASN, coordinates
+- In-memory cache — each IP looked up only once
+- Powered by MaxMind GeoLite2 (local database, no internet required)
+
+### 🛡️ Threat Detection
+- **Port scan detector** — alerts when one IP hits 15+ ports in 10 seconds
+- **ARP spoof detector** — alerts when an IP changes its MAC address
+- Dedicated Alerts tab with severity color coding
+- Flashing tab + sound notification on detection
+- Export all alerts to CSV
+
+### 📊 Export & Reports
+- **PCAP** — open in Wireshark or tcpdump
+- **CSV** — with full GeoIP columns (country, city, ISP, ASN, lat/lon)
+- **JSON** — structured with metadata and export timestamp
+- **HTML Dashboard Report** — self-contained file with interactive charts, stats cards, alerts table, and searchable packet table
+
+---
+
+## Project Structure
+
+```
+phantom/
+├── main.py               # Entry point
+├── gui.py                # GUI — all visual components
+├── packet_sniffer.py     # Capture engine (Scapy + threading)
+├── packet_analyzer.py    # Protocol identification
+├── threat_detector.py    # Port scan + ARP spoof detection
+├── geo_lookup.py         # GeoIP lookup with caching
+├── exporter.py           # PCAP, CSV, JSON export
+├── report_generator.py   # HTML dashboard report
+├── config.py             # App-wide constants
+├── phantom.spec          # PyInstaller build config
+├── requirements.txt      # Dependencies
+└── README.md
+```
+
+---
 
 ## Installation
 
-### Prerequisites
-- Python 3.7 or higher
-- Administrator/root privileges (for packet capture)
+### Requirements
+- Python 3.10 or higher
+- Root / Administrator privileges (required for packet capture)
 
-### Steps
+### Setup
 
-1. **Clone or download** the project files to a directory
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   Or manually install Scapy:
-   ```bash
-   pip install scapy
-   ```
+```bash
+# 1. Clone the repo
+git clone https://github.com/DevBarnwal/phantom.git
+cd phantom
+
+# 2. Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate      # macOS / Linux
+.venv\Scripts\activate         # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Download GeoIP database (free)
+# → https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+# → Download GeoLite2-City (.mmdb format)
+# → Place GeoLite2-City.mmdb in the project root
+```
+
+---
 
 ## Usage
 
-### Running the Application
-
-#### Quick Start
 ```bash
+# macOS / Linux
+sudo .venv/bin/python main.py
+
+# Windows (run terminal as Administrator)
 python main.py
 ```
 
-#### Linux/macOS (with sudo for full privileges)
+### Workflow
+1. Select a **network interface** from the dropdown
+2. Optionally set a **protocol filter**
+3. Click **Start Capture**
+4. Monitor live traffic in the packet table
+5. Switch to the **🛡️ Alerts** tab to watch for threats
+6. Click **Export ▾** to save data or generate an HTML report
+
+### Packet Table Columns
+
+| Column | Description |
+|--------|-------------|
+| TIME | Capture timestamp |
+| SRC | Source IP address |
+| DST | Destination IP address |
+| GEO | Flag + country + city of source IP |
+| PROTO | Protocol (color-coded) |
+| LEN | Packet size in bytes |
+| INFO | Protocol-specific detail |
+
+---
+
+## Security Detection
+
+### Port Scan
+Fires when a single source IP connects to **15+ distinct ports within 10 seconds**.
+
+```python
+# Tunable in threat_detector.py
+PORT_SCAN_THRESHOLD  = 15    # distinct ports
+PORT_SCAN_WINDOW_SEC = 10    # seconds
+```
+
+**Test it:**
 ```bash
-sudo python main.py
+sudo nmap -sS -p 1-200 <router-ip>
 ```
 
-#### Windows (run as Administrator)
-- Right-click Command Prompt → "Run as administrator"
-- Navigate to the project directory
-- Run: `python main.py`
+### ARP Spoofing
+Fires when an IP address is seen using a **different MAC address** than previously recorded — a classic sign of ARP poisoning / MITM attacks.
 
-### Application Workflow
-
-1. **Select Network Interface**: Choose from detected network interfaces
-2. **Choose Protocol Filter**: Filter by ALL, TCP, UDP, ICMP, HTTP, HTTPS, DNS, or ARP
-3. **Start Capture**: Click "Start Capture" to begin monitoring
-4. **Monitor Packets**: View real-time packet information in the table
-5. **Save Results**: Export captured packets to PCAP files
-6. **Stop/Clear**: Stop capture or clear current data as needed
-
-### Interface Guide
-
-#### Control Panel
-- **Interface**: Select network interface for monitoring
-- **Filter**: Choose protocol filter for focused analysis
-- **Start Capture**: Begin packet capture
-- **Stop Capture**: End current capture session
-- **Clear**: Remove all displayed packets
-- **Save PCAP**: Export packets for external analysis
-
-#### Packet Display
-- **TIME**: Timestamp of packet capture
-- **SRC**: Source IP/MAC address
-- **DST**: Destination IP/MAC address  
-- **PROTO**: Identified protocol type
-- **LEN**: Packet length in bytes
-- **INFO**: Protocol-specific information
-
-#### Status Bar
-- **Status**: Current application state
-- **Packet Count**: Total captured packets and queue status
-
-## File Structure
-
-```
-packet-sniffer/
-├── main.py              # Application entry point
-├── gui.py               # Main GUI application
-├── packet_sniffer.py    # Core sniffing functionality
-├── packet_analyzer.py   # Packet analysis logic
-├── config.py            # Configuration constants
-├── requirements.txt     # Python dependencies
-└── README.md           # This documentation
-```
-
-### Module Descriptions
-
-#### `main.py`
-- Application entry point with privilege and dependency checking
-- Logging configuration and error handling
-- Cross-platform compatibility checks
-
-#### `gui.py`
-- Complete GUI implementation using Tkinter
-- User interface components and event handling
-- Real-time packet display and controls
-
-#### `packet_sniffer.py`
-- Core packet capture using Scapy
-- Thread management for non-blocking operation
-- Packet storage and export functionality
-
-#### `packet_analyzer.py`
-- Protocol identification and analysis
-- Packet information extraction
-- Filtering logic implementation
-
-#### `config.py`
-- Application configuration constants
-- Display settings and protocol definitions
-- Customizable parameters
-
-## Protocol Support
-
-### Supported Protocols
-- **TCP**: Transmission Control Protocol with flag analysis
-- **UDP**: User Datagram Protocol
-- **ICMP**: Internet Control Message Protocol
-- **HTTP**: HyperText Transfer Protocol (basic detection)
-- **HTTPS**: HTTP Secure (port 443 detection)
-- **DNS**: Domain Name System queries/responses
-- **ARP**: Address Resolution Protocol
-
-### Protocol Information Displayed
-- **TCP**: Flags (SYN, ACK, FIN, etc.) and sequence numbers
-- **UDP**: Packet length information
-- **ICMP**: Type and code values
-- **DNS**: Query names and response data
-- **HTTP/HTTPS**: Request methods and traffic identification
-- **ARP**: Address resolution requests
-
-## Troubleshooting
-
-### Common Issues
-
-#### "No interfaces found"
-- **Linux**: Run with sudo privileges
-- **Windows**: Run as Administrator
-- **Check**: Network adapters are enabled
-
-#### "Permission denied" errors
-- Ensure running with administrator/root privileges
-- Check firewall settings may be blocking access
-- Verify Scapy installation is complete
-
-#### "Scapy import error"
+**Test it:**
 ```bash
-pip install scapy
-# Or try:
-pip install --upgrade scapy
+sudo python3 -c "
+from scapy.all import *
+send(ARP(op=2, psrc='192.168.1.1', hwsrc='aa:bb:cc:dd:ee:ff'))
+send(ARP(op=2, psrc='192.168.1.1', hwsrc='11:22:33:44:55:66'))
+"
 ```
 
-#### Poor performance/freezing
-- Reduce packet capture volume with BPF filters
-- Clear packets periodically during long captures
-- Close other network-intensive applications
+---
 
-### System Requirements
-- **RAM**: Minimum 512MB available
-- **CPU**: Any modern processor
-- **Network**: Active network interface
-- **OS**: Windows 7+, Linux 2.6+, macOS 10.9+
+## Export & Reports
 
-## Security Considerations
+| Format | Contents |
+|--------|----------|
+| PCAP | Raw packets for Wireshark |
+| CSV | All fields + 14 GeoIP columns per row |
+| JSON | Structured data with export metadata |
+| HTML | Full dashboard — charts, stats, alerts, packet table |
 
-### Privileges
-- Application requires elevated privileges for network access
-- Only captures packets visible to the network interface
-- Does not modify or inject network traffic
+The HTML report is a **single self-contained file** that works offline in any browser.
 
-### Privacy
-- All packet data remains local to your system
-- No data is transmitted to external services
-- Saved PCAP files contain captured network data
+---
 
-### Responsible Use
-- Only monitor networks you own or have permission to analyze
-- Respect privacy and legal requirements in your jurisdiction
-- Use for educational, debugging, and authorized security analysis only
+## Download
 
-## Advanced Usage
+| Platform | Download | Requirements |
+|----------|----------|--------------|
+| 🍎 macOS | [Phantom-macOS.zip](https://github.com/DevBarnwal/phantom/releases/latest) | Run with `sudo` |
+| 🪟 Windows | [Phantom-Windows.zip](https://github.com/DevBarnwal/phantom/releases/latest) | Install [Npcap](https://npcap.com) · Run as Administrator |
+| 🐧 Linux | [Phantom-Linux.tar.gz](https://github.com/DevBarnwal/phantom/releases/latest) | `sudo apt install libpcap-dev` · Run with `sudo` |
 
-### Custom Filtering
-The application supports BPF (Berkeley Packet Filter) syntax for advanced filtering:
-- `tcp port 80` - HTTP traffic only
-- `host 192.168.1.1` - Specific host traffic
-- `not broadcast` - Exclude broadcast packets
+### macOS
+```bash
+unzip Phantom-macOS.zip
+sudo ./Phantom.app/Contents/MacOS/Phantom
+```
 
-### Integration with Other Tools
-Exported PCAP files can be analyzed with:
-- **Wireshark**: Full-featured packet analyzer
-- **tcpdump**: Command-line packet analyzer  
-- **NetworkMiner**: Network forensics tool
-- **Security Onion**: Network security monitoring
+### Windows
+```
+1. Extract Phantom-Windows.zip
+2. Install Npcap from https://npcap.com
+3. Right-click Phantom.exe → Run as Administrator
+```
 
-### Automation Potential
-The modular design allows for:
-- Custom protocol analyzers
-- Automated threat detection
-- Integration with SIEM systems
-- Batch processing capabilities
+### Linux
+```bash
+tar -xzf Phantom-Linux.tar.gz
+sudo ./Phantom/Phantom
+```
 
-## Contributing
+---
 
-This packet sniffer is designed with modularity and extensibility in mind. Areas for enhancement include:
+## Dependencies
 
-- Additional protocol analyzers
-- Packet detail view windows
-- Statistical analysis features
-- Alert/notification systems
-- Database storage options
-- REST API interface
+| Package | Purpose |
+|---------|---------|
+| `scapy` | Packet capture and analysis |
+| `matplotlib` | Live charts embedded in GUI |
+| `geoip2` | GeoIP country / city / ISP lookup |
 
-## License
+---
 
-This project is provided for educational and authorized security analysis purposes. Users are responsible for compliance with local laws and regulations regarding network monitoring.
+## Roadmap
 
-## Support
+- [ ] Bandwidth graph — live packets/sec over time
+- [ ] Top talkers leaderboard
+- [ ] DNS tunneling detection
+- [ ] Multi-interface capture
+- [ ] REST API for external tool integration
 
-For issues, questions, or contributions:
-1. Check the troubleshooting section
-2. Review the configuration options
-3. Examine log files for detailed error information
-4. Ensure proper privileges and dependencies
+---
+
+## Legal
+
+Phantom is provided for **educational and authorized security analysis only**.
+Only monitor networks you own or have explicit permission to analyze.
+Unauthorized network monitoring may be illegal in your jurisdiction.
+
+---
+
+<div align="center">
+Built with 👻 Python · Scapy · Tkinter · matplotlib
+</div>
