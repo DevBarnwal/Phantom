@@ -1,11 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 phantom.spec
-PyInstaller build spec for Phantom — Network Packet Sniffer
-
-Build commands:
-  macOS / Linux : pyinstaller phantom.spec
-  Windows       : pyinstaller phantom.spec
+PyInstaller build spec for Phantom — Network Intelligence & Threat Monitor
 """
 
 import sys
@@ -14,20 +10,14 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 
-# ── Collect all scapy data files and submodules ───────────────────────────────
+# ── Collect scapy data + submodules ──────────────────────────────────────────
 scapy_datas   = collect_data_files('scapy')
 scapy_hiddens = collect_submodules('scapy')
 
-# ── Source files in project root ──────────────────────────────────────────────
-project_datas = [
-    # Include GeoLite2 database if present
-    ('GeoLite2-City.mmdb', '.'),
-]
-
-# Only include the mmdb if it actually exists
-import os as _os
-if not _os.path.exists('GeoLite2-City.mmdb'):
-    project_datas = []
+# ── Include GeoLite2 database if present ─────────────────────────────────────
+project_datas = []
+if os.path.exists('GeoLite2-City.mmdb'):
+    project_datas = [('GeoLite2-City.mmdb', '.')]
 
 a = Analysis(
     ['main.py'],
@@ -35,6 +25,7 @@ a = Analysis(
     binaries=[],
     datas=scapy_datas + project_datas,
     hiddenimports=scapy_hiddens + [
+        # Scapy layers
         'scapy.layers.all',
         'scapy.layers.inet',
         'scapy.layers.inet6',
@@ -42,27 +33,58 @@ a = Analysis(
         'scapy.layers.dns',
         'scapy.layers.http',
         'scapy.contrib',
+        # Matplotlib
         'matplotlib',
         'matplotlib.backends.backend_tkagg',
         'matplotlib.pyplot',
+        'matplotlib.gridspec',
+        # GeoIP
         'geoip2',
         'geoip2.database',
         'geoip2.models',
         'maxminddb',
+        'maxminddb.reader',
+        # Tkinter
         'tkinter',
         'tkinter.ttk',
         'tkinter.filedialog',
         'tkinter.messagebox',
+        # Standard library modules PyInstaller sometimes misses
+        'unittest',
+        'unittest.mock',
+        'unittest.util',
+        'collections',
+        'collections.abc',
+        'ipaddress',
+        'json',
+        'csv',
+        'logging',
+        'logging.handlers',
+        'threading',
+        'queue',
+        'time',
+        'platform',
+        'subprocess',
+        'webbrowser',
+        'pathlib',
+        'datetime',
+        # Project modules
+        'gui',
+        'packet_sniffer',
+        'packet_analyzer',
+        'threat_detector',
+        'geo_lookup',
+        'exporter',
+        'report_generator',
+        'config',
+        # Misc
+        'pkg_resources',
         'pkg_resources.py2_warn',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'test', 'tests', 'unittest',
-        'IPython', 'jupyter', 'notebook',
-        'scipy', 'pandas', 'numpy.testing',
-    ],
+    excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -81,13 +103,11 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,           # No terminal window — GUI only
+    console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # Windows icon (optional — create a phantom.ico file)
-    # icon='phantom.ico',
 )
 
 coll = COLLECT(
@@ -106,17 +126,15 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='Phantom.app',
-        # icon='phantom.icns',     # add a .icns file for a custom icon
         bundle_identifier='com.phantom.netsniffer',
         info_plist={
-            'NSPrincipalClass':              'NSApplication',
-            'NSAppleScriptEnabled':          False,
-            'CFBundleName':                  'Phantom',
-            'CFBundleDisplayName':           'Phantom',
-            'CFBundleShortVersionString':    '1.0.0',
-            'CFBundleVersion':               '1.0.0',
-            'NSHighResolutionCapable':       True,
-            # Required for packet capture on macOS
+            'NSPrincipalClass':               'NSApplication',
+            'NSAppleScriptEnabled':           False,
+            'CFBundleName':                   'Phantom',
+            'CFBundleDisplayName':            'Phantom',
+            'CFBundleShortVersionString':     '1.0.0',
+            'CFBundleVersion':                '1.0.0',
+            'NSHighResolutionCapable':        True,
             'NSLocalNetworkUsageDescription': 'Phantom needs network access to capture packets.',
         },
     )
