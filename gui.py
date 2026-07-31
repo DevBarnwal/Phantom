@@ -718,14 +718,16 @@ class SnifferGUI:
             messagebox.showerror("Error", str(e))
 
     # ── GUI UPDATE LOOP ──────────────────────────────────────────────────────
+    # runs every `PACKET_QUEUE_UPDATE_INTERVAL` milliseconds
 
     def _update_gui(self):
-        packets = self.sniffer.get_packets()
+        packets = self.sniffer.get_packets()   # drains queued packets
         if packets:
             current_filter = self.filter_var.get()
             query = self.search_var.get().lower().strip()
             for pkt in packets:
-                if PacketAnalyzer.matches_filter(pkt, current_filter):
+                # PacketAnalyzer.matches_filter()
+                if PacketAnalyzer.matches_filter(pkt, current_filter):  
                     pkt["geo_summary"] = self._geo.summary(pkt.get("src", ""))
                     self._all_packets.append(pkt)
                     self._proto_counts[pkt.get("protocol", "OTHER")] += 1
