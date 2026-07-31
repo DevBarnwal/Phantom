@@ -523,6 +523,7 @@ class SnifferGUI:
         return query in haystack
 
     # ── CAPTURE CONTROL ──────────────────────────────────────────────────────
+    # reads selected interface and filter.
 
     def _start_capture(self):
         interface = self.interface_var.get()
