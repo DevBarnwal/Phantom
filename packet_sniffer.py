@@ -39,7 +39,8 @@ class PacketSniffer:
         except Exception as e:
             logger.error(f"Error getting interfaces: {e}")
             return []
-    
+
+    #clears old data and starts a daemon thread
     def start_capture(self, interface, bpf_filter=""):
         """
         Start packet capture on specified interface.
@@ -89,7 +90,8 @@ class PacketSniffer:
             self.sniffer_thread.join(timeout=2.0)
             if self.sniffer_thread.is_alive():
                 logger.warning("Sniffer thread did not stop gracefully")
-    
+
+    # Background thread calls Scapy `sniff()`
     def _sniff_packets(self, interface, bpf_filter):
         """
         Internal method to run packet sniffing in separate thread.
