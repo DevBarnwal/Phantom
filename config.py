@@ -21,7 +21,10 @@ PACKET_DISPLAY_COLUMNS = {
     "info": {"width": 200, "anchor": "w"}
 }
 
+
+
 # Protocol Filters
+# Filter label maps to BPF string through
 PROTOCOL_FILTERS = {
     "ALL": "",
     "TCP": "tcp",
